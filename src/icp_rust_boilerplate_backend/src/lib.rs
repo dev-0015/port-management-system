@@ -1,59 +1,14 @@
 #[macro_use]
 extern crate serde;
-use candid::{Decode, Encode};
+use candid::Principal;
+use ic_cdk::caller;
 //use ic_cdk::api::time;
-use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-use std::{borrow::Cow, cell::RefCell};
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+use std::cell::RefCell;
 
-type Memory = VirtualMemory<DefaultMemoryImpl>;
-type IdCell = Cell<u64, Memory>;
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct Port {
-    id: u64,
-    name: String,
-    location: String,
-    capacity: u32,
-    current_ships: u32,
-}
-
-impl Storable for Port {
-    fn to_bytes(&self) -> std::borrow::Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: std::borrow::Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for Port {
-    const MAX_SIZE: u32 = 1024;
-    const IS_FIXED_SIZE: bool = false;
-}
-
-#[derive(candid::CandidType, Clone, Serialize, Deserialize, Default)]
-struct User {
-    user_id: u64,
-    username: String,
-    email: String,
-}
-
-impl Storable for User {
-    fn to_bytes(&self) -> std::borrow::Cow<[u8]> {
-        Cow::Owned(Encode!(self).unwrap())
-    }
-
-    fn from_bytes(bytes: std::borrow::Cow<[u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).unwrap()
-    }
-}
-
-impl BoundedStorable for User {
-    const MAX_SIZE: u32 = 1024;
-    const IS_FIXED_SIZE: bool = false;
-}
+mod types;
+use types::*;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
@@ -62,6 +17,11 @@ thread_local! {
 
     static ID_COUNTER: RefCell<IdCell> = RefCell::new(
         IdCell::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0))), 0)
+            .expect("Cannot create a counter")
+    );
+
+    static ADMIN: RefCell<AdminCell> = RefCell::new(
+        AdminCell::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0))), AdminPrincipal("".to_string()))
             .expect("Cannot create a counter")
     );
 
@@ -76,18 +36,13 @@ thread_local! {
     ));
 }
 
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
-struct PortPayload {
-    name: String,
-    location: String,
-    capacity: u32,
+
+#[ic_cdk::init]
+fn init() {
+    let _ = ADMIN.with(|service| service.borrow_mut().set(AdminPrincipal(caller().to_string())));
 }
 
-#[derive(candid::CandidType, Serialize, Deserialize, Default)]
-struct UserPayload {
-    username: String,
-    email: String,
-}
+
 
 #[ic_cdk::query]
 fn get_port(id: u64) -> Result<Port, Error> {
@@ -109,8 +64,27 @@ fn get_user(user_id: u64) -> Result<User, Error> {
     }
 }
 
+fn is_caller_admin() -> Result<(), Error> {
+    let admin = ADMIN.with(|service| {
+        let current_value = service.borrow().get().clone();
+        current_value
+    });
+    let convert_to_admin_principal = Principal::from_text(admin.0.clone());
+    if convert_to_admin_principal.is_err(){
+        return Err(Error::Unauthorized { msg: format!("Couldn't verify whether caller was the admin") })
+    }
+    let admin_principal = convert_to_admin_principal.unwrap();
+
+    if admin_principal != caller(){
+        return Err(Error::Unauthorized { msg: format!("Not admin of the canister") })
+    }else{
+        Ok(())
+    }
+}
+
 #[ic_cdk::update]
-fn add_port(port_payload: PortPayload) -> Option<Port> {
+fn add_port(port_payload: PortPayload) -> Result<Port, Error> {
+    is_caller_admin()?;
     let port_id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -120,6 +94,7 @@ fn add_port(port_payload: PortPayload) -> Option<Port> {
 
     let port = Port {
         id: port_id,
+    
         name: port_payload.name,
         location: port_payload.location,
         capacity: port_payload.capacity,
@@ -127,11 +102,14 @@ fn add_port(port_payload: PortPayload) -> Option<Port> {
     };
 
     do_insert_port(&port);
-    Some(port)
+    Ok(port)
 }
 
 #[ic_cdk::update]
-fn add_user(user_payload: UserPayload) -> Option<User> {
+fn add_user(user_payload: UserPayload) -> Result<User, Error> {
+    if user_payload.email.trim().is_empty() || user_payload.username.trim().is_empty(){
+        return Err(Error::InvalidUserPayload{msg: format!("Payload cannot contain empty values"), payload: user_payload})
+    }
     let user_id = ID_COUNTER
         .with(|counter| {
             let current_value = *counter.borrow().get();
@@ -146,11 +124,12 @@ fn add_user(user_payload: UserPayload) -> Option<User> {
     };
 
     do_insert_user(&user);
-    Some(user)
+    Ok(user)
 }
 
 #[ic_cdk::update]
 fn update_port(id: u64, payload: PortPayload) -> Result<Port, Error> {
+    is_caller_admin()?;
     match PORT_STORAGE.with(|service| service.borrow_mut().get(&id)) {
         Some(mut port) => {
             port.name = payload.name;
@@ -172,6 +151,9 @@ fn do_insert_port(port: &Port) {
 
 #[ic_cdk::update]
 fn update_user(user_id: u64, payload: UserPayload) -> Result<User, Error> {
+    if payload.email.trim().is_empty() || payload.username.trim().is_empty(){
+        return Err(Error::InvalidUserPayload{msg: format!("Payload cannot contain empty values"), payload})
+    }
     match USER_STORAGE.with(|service| service.borrow_mut().get(&user_id)) {
         Some(mut user) => {
             user.username = payload.username;
@@ -192,6 +174,7 @@ fn do_insert_user(user: &User) {
 
 #[ic_cdk::update]
 fn delete_port(id: u64) -> Result<Port, Error> {
+    is_caller_admin()?;
     match PORT_STORAGE.with(|service| service.borrow_mut().remove(&id)) {
         Some(port) => Ok(port),
         None => Err(Error::NotFound {
@@ -222,6 +205,7 @@ fn _get_user(user_id: &u64) -> Option<User> {
 
 #[ic_cdk::update]
 fn add_ship_to_port(port_id: u64) -> Result<(), Error> {
+    is_caller_admin()?;
     // Retrieve the port based on the given ID
     match _get_port(&port_id) {
         Some(mut port) => {
@@ -241,6 +225,7 @@ fn add_ship_to_port(port_id: u64) -> Result<(), Error> {
 
 #[ic_cdk::update]
 fn ships_arrival(port_id: u64, num_ships: u32) -> Result<(), Error> {
+    is_caller_admin()?;
     // Retrieve the port based on the given ID
     match _get_port(&port_id) {
         Some(mut port) => {
@@ -270,19 +255,16 @@ fn get_all_users() -> Vec<User> {
 
 // Admin-related functionality
 #[ic_cdk::query]
-fn get_admin() -> u64 {
-    // Return the hard-coded admin ID
-    1
+fn get_admin() -> AdminPrincipal {
+    ADMIN.with(|service| {
+        service.borrow().get().clone()
+    })
 }
 
 #[ic_cdk::update]
-fn transfer_ships_admin(source_port_id: u64, destination_port_id: u64, num_ships: u32, admin_id: u64) -> Result<(), Error> {
+fn transfer_ships_admin(source_port_id: u64, destination_port_id: u64, num_ships: u32) -> Result<(), Error> {
     // Check if the caller is an admin
-    if admin_id != get_admin() {
-        return Err(Error::Unauthorized {
-            msg: "only admin can transfer ships".to_string(),
-        });
-    }
+    is_caller_admin()?;
     // Transfer ships
     let mut source_port = match _get_port(&source_port_id) {
         Some(port) => port,
@@ -325,6 +307,8 @@ fn transfer_ships_admin(source_port_id: u64, destination_port_id: u64, num_ships
 enum Error {
     NotFound { msg: String },
     Unauthorized { msg: String },
+    InvalidUserPayload{msg: String, payload: UserPayload},
+    InvalidPortPayload{msg: String, payload: PortPayload}
 }
 
 // need this to generate candid
