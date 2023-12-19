@@ -21,7 +21,7 @@ thread_local! {
     );
 
     static ADMIN: RefCell<AdminCell> = RefCell::new(
-        AdminCell::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0))), AdminPrincipal("".to_string()))
+        AdminCell::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3))), AdminPrincipal("".to_string()))
             .expect("Cannot create a counter")
     );
 
