@@ -1,6 +1,8 @@
 type Error = variant {
+  InvalidPortPayload : record { msg : text; payload : PortPayload };
   NotFound : record { msg : text };
   Unauthorized : record { msg : text };
+  InvalidUserPayload : record { msg : text; payload : UserPayload };
 };
 type Port = record {
   id : nat64;
@@ -10,24 +12,24 @@ type Port = record {
   location : text;
 };
 type PortPayload = record { name : text; capacity : nat32; location : text };
-type Result = variant { Ok; Err : Error };
-type Result_1 = variant { Ok : Port; Err : Error };
+type Result = variant { Ok : Port; Err : Error };
+type Result_1 = variant { Ok; Err : Error };
 type Result_2 = variant { Ok : User; Err : Error };
 type User = record { username : text; user_id : nat64; email : text };
 type UserPayload = record { username : text; email : text };
-service : {
-  add_port : (PortPayload) -> (opt Port);
-  add_ship_to_port : (nat64) -> (Result);
-  add_user : (UserPayload) -> (opt User);
-  delete_port : (nat64) -> (Result_1);
+service : () -> {
+  add_port : (PortPayload) -> (Result);
+  add_ship_to_port : (nat64) -> (Result_1);
+  add_user : (UserPayload) -> (Result_2);
+  delete_port : (nat64) -> (Result);
   delete_user : (nat64) -> (Result_2);
-  get_admin : () -> (nat64) query;
+  get_admin : () -> (text) query;
   get_all_ports : () -> (vec Port) query;
   get_all_users : () -> (vec User) query;
-  get_port : (nat64) -> (Result_1) query;
+  get_port : (nat64) -> (Result) query;
   get_user : (nat64) -> (Result_2) query;
-  ships_arrival : (nat64, nat32) -> (Result);
-  transfer_ships_admin : (nat64, nat64, nat32, nat64) -> (Result);
-  update_port : (nat64, PortPayload) -> (Result_1);
+  ships_arrival : (nat64, nat32) -> (Result_1);
+  transfer_ships_admin : (nat64, nat64, nat32) -> (Result_1);
+  update_port : (nat64, PortPayload) -> (Result);
   update_user : (nat64, UserPayload) -> (Result_2);
 }
